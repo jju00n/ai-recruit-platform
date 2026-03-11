@@ -1,0 +1,272 @@
+# AI Recruit Platform
+
+구직자와 채용공고를 AI로 매칭하는 **Spring Boot MSA 아키텍처** 기반 채용 플랫폼입니다.
+Claude AI를 활용해 이력서를 분석하고, 맞춤 채용공고 추천 및 코칭 피드백을 제공합니다.
+
+---
+
+## 주요 기능
+
+- **JWT 인증/인가** — 로그인, 로그아웃, 토큰 재발급, Redis 블랙리스트
+- **소셜 로그인** — Kakao, Apple OAuth2
+- **채용공고** — CRUD, Elasticsearch 전문 검색, 크롤러 (Wanted / 사람인)
+- **이력서 관리** — PDF 업로드, 이력서 목록/상세 조회
+- **지원 관리** — 지원하기, 지원 현황, 지원 취소
+- **AI 분석** — Claude API로 이력서-JD 적합도 스코어링, 피드백 생성
+- **AI 코칭** — 이력서 종합 점수, 개선 포인트 제안
+- **AI 공고 추천** — 이력서 기반 맞춤 채용공고 상위 5개 추천
+- **이메일 알림** — Kafka 이벤트 기반 비동기 알림 (notification-service)
+
+---
+
+## 아키텍처
+
+```
+Client (React Native / Expo)
+    │
+    ▼
+API Gateway :8080  ← JWT 검증, X-User-Id 헤더 주입
+    │
+    ├── auth-service       :8081  JWT 발급/검증
+    ├── user-service       :8082  회원가입, 소셜 로그인, 프로필
+    ├── job-service        :8083  채용공고, ES 검색, 크롤러
+    ├── application-service:8084  지원/이력서/AI 분석
+    └── notification-service:8085 Kafka Consumer, 이메일
+```
+
+### 데이터 흐름 (지원하기 + AI 피드백)
+
+```
+Client → API Gateway → application-service
+                           │
+                           ├── MySQL: applications 저장
+                           └── Kafka: "application.submitted" 발행
+                                           │
+                              ┌────────────┴────────────┐
+                              ▼                         ▼
+                   application-service           notification-service
+                   (Kafka Consumer)              (Kafka Consumer)
+                   Claude API 이력서 분석          지원 완료 이메일
+                   ai_feedback 저장
+                   "resume.analyzed" 발행
+                              │
+                              ▼
+                   notification-service
+                   AI 분석 완료 이메일
+```
+
+---
+
+## 기술 스택
+
+| 분류 | 기술 | 선택 이유 |
+|------|------|----------|
+| Language | Java 17 | LTS 버전, Record/Pattern Matching 등 최신 문법 지원 |
+| Framework | Spring Boot 3.3.5 | MSA에 최적화된 생태계, Spring Cloud와 자연스러운 통합 |
+| Build | Maven (멀티모듈) | 모듈 간 의존성 관리 및 공통 설정 일원화 |
+| Gateway | Spring Cloud Gateway 2023.0.3 | Reactive 기반 고성능 라우팅, JWT 필터 통합 용이 |
+| DB | MySQL 8.0 | 안정적인 RDBMS, JPA와의 높은 호환성 |
+| Cache | Redis 7 | JWT 블랙리스트·AI 응답 캐싱, TTL 기반 자동 만료 |
+| Message Queue | Apache Kafka (Confluent 7.5.0) | AI 분석·이메일 알림 비동기 처리, 서비스 간 느슨한 결합 |
+| Search | Elasticsearch 8.11.0 | 채용공고 키워드/필터 전문 검색, 향후 kNN 벡터 검색 확장 예정 |
+| LLM | Claude API (`claude-sonnet-4-6`, `claude-haiku-4-5`) | 정확도가 중요한 이력서 분석은 Sonnet, 속도가 중요한 코칭/추천은 Haiku로 모델 분리 |
+| Container | Docker Compose | AWS 프리티어 한계로 로컬 개발환경 구성, 단일 명령으로 전체 인프라 실행 |
+
+---
+
+## 프로젝트 구조
+
+```
+ai-recruit-platform/
+├── common/               # 공유 라이브러리 (ResultData, Status, BizException)
+├── api-gateway/          # Spring Cloud Gateway + JWT 필터
+├── auth-service/         # 인증 서비스
+├── user-service/         # 사용자 서비스
+├── job-service/          # 채용공고 서비스
+├── application-service/  # 지원/이력서/AI 서비스
+├── notification-service/ # 알림 서비스
+└── docker-compose.yml    # 로컬 인프라 전체
+```
+
+---
+
+## 시작하기
+
+### 사전 요구사항
+
+- Java 17
+- Docker & Docker Compose
+- Maven 3.8+
+
+### 1. 인프라 실행
+
+```bash
+docker compose up -d
+```
+
+| 서비스 | 포트 |
+|--------|------|
+| MySQL | 3306 |
+| Redis | 6379 |
+| Kafka | 9092 |
+| Elasticsearch | 9200 |
+| Kibana | 5601 |
+
+### 2. 환경 변수 설정
+
+프로젝트 루트에 `.env` 파일을 생성합니다.
+
+```bash
+DB_HOST=localhost
+DB_USERNAME=airecruit
+DB_PASSWORD=password
+REDIS_HOST=localhost
+KAFKA_HOST=localhost
+ES_HOST=localhost
+JWT_SECRET_KEY=your_jwt_secret_key
+ENCRYPTION_SECRET_KEY=your_encryption_key
+MAIL_USERNAME=your_email@gmail.com
+MAIL_PASSWORD=your_app_password
+KAKAO_CLIENT_ID=your_kakao_client_id
+KAKAO_CLIENT_SECRET=your_kakao_client_secret
+CLAUDE_API_KEY=your_claude_api_key
+```
+
+### 3. 빌드
+
+```bash
+# common 모듈 먼저 설치
+JAVA_HOME=$(/usr/libexec/java_home -v 17) ./mvnw install -pl common -am
+
+# 전체 빌드
+JAVA_HOME=$(/usr/libexec/java_home -v 17) ./mvnw clean package -DskipTests
+```
+
+### 4. 서비스 실행
+
+각 서비스를 개별 터미널에서 실행합니다.
+
+```bash
+# 예: auth-service
+JAVA_HOME=$(/usr/libexec/java_home -v 17) ./mvnw spring-boot:run -pl auth-service
+
+# 예: job-service
+JAVA_HOME=$(/usr/libexec/java_home -v 17) ./mvnw spring-boot:run -pl job-service
+```
+
+또는 `start.sh` 스크립트를 사용합니다.
+
+```bash
+./start.sh
+```
+
+---
+
+## API 엔드포인트
+
+모든 요청은 API Gateway(`http://localhost:8080`)를 통해 처리됩니다.
+
+### Auth
+
+| 메서드 | 경로 | 설명 | 인증 |
+|--------|------|------|------|
+| POST | `/api/v1/auth/login` | 로그인 (accessToken + refreshToken 발급) | 불필요 |
+| POST | `/api/v1/auth/logout` | 로그아웃 (토큰 블랙리스트 등록) | 필요 |
+| POST | `/api/v1/auth/reissue` | 액세스 토큰 재발급 | 불필요 |
+
+### User
+
+| 메서드 | 경로 | 설명 | 인증 |
+|--------|------|------|------|
+| POST | `/api/v1/users/signup` | 회원가입 | 불필요 |
+| POST | `/api/v1/users/email/send` | 이메일 인증 코드 발송 | 불필요 |
+| POST | `/api/v1/users/email/verify` | 이메일 인증 코드 확인 | 불필요 |
+| GET | `/api/v1/users/me` | 내 정보 조회 | 필요 |
+| GET | `/api/v1/users/kakao/callback` | 카카오 소셜 로그인 | 불필요 |
+
+### Job
+
+| 메서드 | 경로 | 설명 | 인증 |
+|--------|------|------|------|
+| GET | `/api/v1/jobs` | 채용공고 목록 (페이징) | 불필요 |
+| GET | `/api/v1/jobs/{id}` | 채용공고 상세 | 불필요 |
+| GET | `/api/v1/jobs/search` | Elasticsearch 검색 | 불필요 |
+| POST | `/api/v1/jobs` | 채용공고 등록 | 필요 |
+| PUT | `/api/v1/jobs/{id}` | 채용공고 수정 | 필요 |
+| DELETE | `/api/v1/jobs/{id}` | 채용공고 마감 | 필요 |
+| POST | `/api/v1/jobs/crawl` | 크롤링 수동 트리거 | 필요 |
+| POST | `/api/v1/jobs/reindex` | Elasticsearch 전체 재색인 | 필요 |
+
+### Application
+
+| 메서드 | 경로 | 설명 | 인증 |
+|--------|------|------|------|
+| POST | `/api/v1/applications` | 지원하기 | 필요 |
+| GET | `/api/v1/applications` | 내 지원 목록 | 필요 |
+| GET | `/api/v1/applications/{id}` | 지원 상세 (AI 피드백 포함) | 필요 |
+| DELETE | `/api/v1/applications/{id}` | 지원 취소 | 필요 |
+
+### Resume
+
+| 메서드 | 경로 | 설명 | 인증 |
+|--------|------|------|------|
+| POST | `/api/v1/resumes` | 이력서 업로드 (PDF/텍스트) | 필요 |
+| GET | `/api/v1/resumes` | 내 이력서 목록 | 필요 |
+| GET | `/api/v1/resumes/{id}` | 이력서 상세 | 필요 |
+| DELETE | `/api/v1/resumes/{id}` | 이력서 삭제 | 필요 |
+| POST | `/api/v1/resumes/{id}/coaching` | AI 코칭 피드백 요청 | 필요 |
+| GET | `/api/v1/resumes/{id}/recommended-jobs` | AI 공고 추천 | 필요 |
+
+---
+
+## Kafka 토픽
+
+| 토픽 | Producer | Consumer | 설명 |
+|------|----------|----------|------|
+| `job.created` | job-service | notification-service | 새 공고 등록 시 |
+| `application.submitted` | application-service | application-service, notification-service | 지원 완료 시 |
+| `resume.analyzed` | application-service | notification-service | AI 분석 완료 시 |
+
+---
+
+## AI 성능 최적화
+
+- **모델 분리**: 지원 분석 → `claude-sonnet-4-6`, 코칭/추천 → `claude-haiku-4-5-20251001`
+- **Prompt Caching**: `anthropic-beta: prompt-caching-2024-07-31` 헤더 + `cache_control: ephemeral`
+- **공고 사전 필터링**: 이력서 키워드로 20개 → 8개 압축 (프롬프트 ~60% 단축)
+- **Redis 결과 캐싱**: `ai:coaching:{id}`, `ai:recommend:{id}` TTL 1시간 (캐시 히트 시 0.01초)
+- **529 Retry**: Exponential backoff (1초 → 2초, 최대 3회)
+- **성능 결과**: AI 추천 14.3초 → 6.2초 (57%↑), AI 코칭 14.9초 → 5.9초 (61%↑)
+
+---
+
+## DB 소유권 (DB per Service)
+
+| 서비스 | 저장소 |
+|--------|--------|
+| auth-service | Redis (토큰 블랙리스트) |
+| user-service | MySQL: `members`, `social_accounts` |
+| job-service | MySQL: `companies`, `job_postings` + Elasticsearch |
+| application-service | MySQL: `resumes`, `applications`, `ai_feedback` |
+| notification-service | 없음 (Kafka 이벤트만 처리) |
+
+---
+
+## 코드 컨벤션
+
+- **클래스**: PascalCase
+- **메서드/변수**: camelCase
+- **Lombok**: Entity → `@Getter @NoArgsConstructor @Builder`, Service → `@RequiredArgsConstructor`
+- **로깅**: `@Slf4j` + `log.info/warn/error`
+- **응답 포맷**: `ResultData<T>` (common 모듈)
+- **서비스 간 사용자 식별**: `X-User-Id` 헤더 (API Gateway가 JWT에서 추출하여 주입)
+
+---
+
+## 로드맵
+
+- [x] Phase 1~4: 인프라, 인증, 사용자, 채용공고, 프론트엔드 연동
+- [x] Phase 5: 지원/이력서 관리, Claude AI 분석, AI 코칭/추천, 속도 최적화
+- [ ] Phase 6: notification-service Kafka Consumer + 이메일 알림
+- [ ] Phase 7: RAG 기반 AI 매칭 고도화 (Elasticsearch dense_vector + kNN 검색)
+- [ ] Phase 8: 통합 테스트 및 배포

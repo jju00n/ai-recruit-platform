@@ -1,0 +1,27 @@
+server:
+  port: 8083
+
+spring:
+  application:
+    name: job-service
+  datasource:
+    url: jdbc:mysql://${DB_HOST:localhost}:3306/ai_recruit?serverTimezone=Asia/Seoul&characterEncoding=UTF-8
+    username: ${DB_USERNAME:root}
+    password: ${DB_PASSWORD:password}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  jpa:
+    hibernate:
+      ddl-auto: update
+    properties:
+      hibernate:
+        format_sql: true
+  elasticsearch:
+    uris: http://${ES_HOST:localhost}:9200
+  kafka:
+    bootstrap-servers: ${KAFKA_HOST:localhost}:9092
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+
+crawler:
+  enabled: true
