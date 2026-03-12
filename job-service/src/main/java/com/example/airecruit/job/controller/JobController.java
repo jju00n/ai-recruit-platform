@@ -14,6 +14,8 @@ import org.springframework.data.domain.Page;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.List;
+
 @RestController
 @RequestMapping("/api/v1/jobs")
 @RequiredArgsConstructor
@@ -91,6 +93,15 @@ public class JobController {
     public ResponseEntity<ResultData<String>> reindexAll() {
         int count = jobService.reindexAll();
         return ResponseEntity.ok(ResultData.of(Status.SUCCESS, "재색인 완료: " + count + "건"));
+    }
+
+    // kNN 벡터 유사도 검색 (AI 추천용 — application-service에서 이력서 임베딩 전달)
+    @PostMapping("/search/vector")
+    public ResponseEntity<ResultData<List<JobPostingDto.SearchResponse>>> knnSearch(
+            @RequestBody List<Float> vector,
+            @RequestParam(defaultValue = "10") int k) {
+        List<JobPostingDto.SearchResponse> response = jobSearchService.knnSearch(vector, k);
+        return ResponseEntity.ok(ResultData.of(Status.SUCCESS, response));
     }
 
     // 크롤링 수동 트리거 (개발/데모용)

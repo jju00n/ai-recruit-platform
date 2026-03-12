@@ -34,6 +34,7 @@ public class JobService {
     private final JobPostingRepository jobPostingRepository;
     private final JobPostingSearchRepository jobPostingSearchRepository;
     private final JobEventProducer jobEventProducer;
+    private final EmbeddingService embeddingService;
 
     @Transactional
     public CompanyDto.Response createCompany(CompanyDto.CreateReq req) {
@@ -157,6 +158,8 @@ public class JobService {
         List<String> skillList = parseSkills(jobPosting.getSkills());
         String deadline = jobPosting.getDeadline() != null ? jobPosting.getDeadline().toString() : null;
 
+        float[] vector = embeddingService.embed(buildEmbeddingText(jobPosting));
+
         JobPostingDocument document = JobPostingDocument.builder()
                 .id(jobPosting.getId().toString())
                 .jobPostingId(jobPosting.getId())
@@ -175,9 +178,19 @@ public class JobService {
                 .source(jobPosting.getSource().name())
                 .deadline(deadline)
                 .createdAt(jobPosting.getCreatedAt())
+                .descriptionVector(vector)
                 .build();
 
         jobPostingSearchRepository.save(document);
+    }
+
+    private String buildEmbeddingText(JobPosting jp) {
+        return String.join(" ",
+                jp.getTitle() != null ? jp.getTitle() : "",
+                jp.getDescription() != null ? jp.getDescription() : "",
+                jp.getRequirements() != null ? jp.getRequirements() : "",
+                jp.getSkills() != null ? jp.getSkills() : ""
+        );
     }
 
     private List<String> parseSkills(String skills) {

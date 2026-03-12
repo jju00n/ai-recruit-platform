@@ -1,5 +1,6 @@
 package com.example.airecruit.application.controller;
 
+import com.example.airecruit.application.dto.AiJobReviewDto;
 import com.example.airecruit.application.dto.ApplicationDto;
 import com.example.airecruit.application.service.ApplicationService;
 import com.example.airecruit.common.dto.ResultData;
@@ -39,6 +40,14 @@ public class ApplicationController {
             @RequestHeader("X-User-Id") Long userId,
             @PathVariable Long id) {
         ApplicationDto.DetailResponse response = applicationService.getApplicationDetail(userId, id);
+        return ResponseEntity.ok(ResultData.of(Status.SUCCESS, response));
+    }
+
+    @GetMapping("/jobs/{jobId}/ai-review")
+    public ResponseEntity<ResultData<AiJobReviewDto.Response>> getJobAiReview(
+            @RequestHeader("X-User-Id") Long userId,
+            @PathVariable Long jobId) {
+        AiJobReviewDto.Response response = applicationService.getJobAiReview(userId, jobId);
         return ResponseEntity.ok(ResultData.of(Status.SUCCESS, response));
     }
 

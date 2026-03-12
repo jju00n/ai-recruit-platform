@@ -13,8 +13,9 @@ Claude AI를 활용해 이력서를 분석하고, 맞춤 채용공고 추천 및
 - **이력서 관리** — PDF 업로드, 이력서 목록/상세 조회
 - **지원 관리** — 지원하기, 지원 현황, 지원 취소
 - **AI 분석** — Claude API로 이력서-JD 적합도 스코어링, 피드백 생성
+- **AI 리뷰** — 공고 상세 진입 시 이력서 적합도 즉시 분석 (점수·강점·약점·합격전략)
 - **AI 코칭** — 이력서 종합 점수, 개선 포인트 제안
-- **AI 공고 추천** — 이력서 기반 맞춤 채용공고 상위 5개 추천
+- **AI 공고 추천** — 이력서 임베딩 kNN 검색으로 의미 기반 유사 공고 추천 (OpenAI text-embedding-3-small + ES dense_vector)
 - **이메일 알림** — Kafka 이벤트 기반 비동기 알림 (notification-service)
 
 ---
@@ -68,7 +69,7 @@ Client → API Gateway → application-service
 | DB | MySQL 8.0 | 안정적인 RDBMS, JPA와의 높은 호환성 |
 | Cache | Redis 7 | JWT 블랙리스트·AI 응답 캐싱, TTL 기반 자동 만료 |
 | Message Queue | Apache Kafka (Confluent 7.5.0) | AI 분석·이메일 알림 비동기 처리, 서비스 간 느슨한 결합 |
-| Search | Elasticsearch 8.11.0 | 채용공고 키워드/필터 전문 검색, 향후 kNN 벡터 검색 확장 예정 |
+| Search | Elasticsearch 8.11.0 | 채용공고 키워드/필터 전문 검색 + dense_vector kNN 벡터 검색 (dims=1536, cosine similarity) |
 | LLM | Claude API (`claude-sonnet-4-6`, `claude-haiku-4-5`) | 정확도가 중요한 이력서 분석은 Sonnet, 속도가 중요한 코칭/추천은 Haiku로 모델 분리 |
 | Container | Docker Compose | AWS 프리티어 한계로 로컬 개발환경 구성, 단일 명령으로 전체 인프라 실행 |
 
@@ -130,6 +131,7 @@ MAIL_PASSWORD=your_app_password
 KAKAO_CLIENT_ID=your_kakao_client_id
 KAKAO_CLIENT_SECRET=your_kakao_client_secret
 CLAUDE_API_KEY=your_claude_api_key
+OPENAI_API_KEY=your_openai_api_key
 ```
 
 ### 3. 빌드
@@ -196,6 +198,7 @@ JAVA_HOME=$(/usr/libexec/java_home -v 17) ./mvnw spring-boot:run -pl job-service
 | DELETE | `/api/v1/jobs/{id}` | 채용공고 마감 | 필요 |
 | POST | `/api/v1/jobs/crawl` | 크롤링 수동 트리거 | 필요 |
 | POST | `/api/v1/jobs/reindex` | Elasticsearch 전체 재색인 | 필요 |
+| POST | `/api/v1/jobs/search/vector` | 벡터 기반 kNN 유사 공고 검색 | 불필요 |
 
 ### Application
 
@@ -231,12 +234,40 @@ JAVA_HOME=$(/usr/libexec/java_home -v 17) ./mvnw spring-boot:run -pl job-service
 
 ## AI 성능 최적화
 
-- **모델 분리**: 지원 분석 → `claude-sonnet-4-6`, 코칭/추천 → `claude-haiku-4-5-20251001`
-- **Prompt Caching**: `anthropic-beta: prompt-caching-2024-07-31` 헤더 + `cache_control: ephemeral`
-- **공고 사전 필터링**: 이력서 키워드로 20개 → 8개 압축 (프롬프트 ~60% 단축)
-- **Redis 결과 캐싱**: `ai:coaching:{id}`, `ai:recommend:{id}` TTL 1시간 (캐시 히트 시 0.01초)
-- **529 Retry**: Exponential backoff (1초 → 2초, 최대 3회)
-- **성능 결과**: AI 추천 14.3초 → 6.2초 (57%↑), AI 코칭 14.9초 → 5.9초 (61%↑)
+**1차 최적화 (2026-03-07)**
+
+| 기법 | 내용 |
+|------|------|
+| 모델 분리 | 지원 분석(비동기) → `claude-sonnet-4-6`, 코칭/추천/리뷰(사용자 대기) → `claude-haiku-4-5-20251001` |
+| Prompt Caching | `cache_control: ephemeral` + `anthropic-beta: prompt-caching-2024-07-31` 헤더 |
+| 공고 사전 필터링 | 이력서 기술 키워드 추출 → 공고 20개 → 상위 8개 압축 (프롬프트 ~60% 단축) |
+| Redis 결과 캐싱 | `ai:coaching:{id}`, `ai:recommend:{id}`, `ai:review:{jobId}:{resumeId}` TTL 1시간 |
+| 529 Retry | Exponential backoff (1초 → 2초, 최대 3회) |
+
+**2차 최적화 (2026-03-13) — 프롬프트 압축 + max_tokens 축소**
+
+| 기법 | 내용 |
+|------|------|
+| 입력 토큰 축소 | 이력서 최대 3000자 → 800~1500자, JD 불필요 섹션 제거 |
+| 출력 항목 최소화 | improvements 3개 → 2개, 각 필드 20자 이내 명시 |
+| max_tokens 축소 | 코칭 1024→640, 추천 1024→512, 리뷰 1024→400 |
+
+**3차 최적화 (2026-03-13) — kNN 도입에 따른 추천 프롬프트 재설계**
+
+| 기법 | 내용 |
+|------|------|
+| 공고 desc 제거 | kNN이 의미 매칭을 담당하므로 Claude 입력에서 description 불필요 |
+| 공고 포맷 간소화 | JSON → `id\|title\|company` 한 줄 |
+| 이력서 추가 축소 | 800자 → 300자 |
+
+**누적 성능 결과:**
+
+| 기능 | 최초 | 1차 최적화 후 | 2차 최적화 후 | 3차 최적화 후 | 누적 개선 |
+|------|------|-------------|-------------|-------------|---------|
+| AI 코칭 | 14.9초 | 5.9초 | **3.66초** | — | **75%↓** |
+| AI 추천 | 14.3초 | 6.2초 | 4.35초 | **3.7초** | **74%↓** |
+| AI 리뷰 | — | 6.1초 (첫 구현) | **3.32초** | — | **46%↓** |
+| 캐시 히트 | — | 0.01초 | 0.01초 | 0.01초 | — |
 
 ---
 
@@ -267,6 +298,7 @@ JAVA_HOME=$(/usr/libexec/java_home -v 17) ./mvnw spring-boot:run -pl job-service
 
 - [x] Phase 1~4: 인프라, 인증, 사용자, 채용공고, 프론트엔드 연동
 - [x] Phase 5: 지원/이력서 관리, Claude AI 분석, AI 코칭/추천, 속도 최적화
-- [ ] Phase 6: notification-service Kafka Consumer + 이메일 알림
-- [ ] Phase 7: RAG 기반 AI 매칭 고도화 (Elasticsearch dense_vector + kNN 검색)
-- [ ] Phase 8: 통합 테스트 및 배포
+- [x] Phase 6: notification-service Kafka Consumer + 이메일 알림, AI 리뷰 기능, 2차 속도 최적화
+- [x] Phase 7: RAG 기반 AI 매칭 고도화 — ES dense_vector + OpenAI 임베딩 + kNN 검색, 3차 속도 최적화
+- [ ] Phase 8: 관심 기업 팔로우 + 공고 스크랩 + Kafka 이메일 알림 + 공고 상세 기업 정보/지도 + 채용 트렌드
+- [ ] Phase 9: 통합 테스트 및 배포

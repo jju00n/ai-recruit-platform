@@ -19,7 +19,15 @@ spring:
     bootstrap-servers: ${KAFKA_HOST:localhost}:9092
     consumer:
       group-id: notification-service-group
+      auto-offset-reset: earliest
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
       value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
       properties:
         spring.json.trusted.packages: "*"
+
+user-service:
+  url: http://localhost:8082
+
+logging:
+  level:
+    com.example.airecruit.notification: INFO

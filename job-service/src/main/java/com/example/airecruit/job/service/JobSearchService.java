@@ -1,7 +1,9 @@
 package com.example.airecruit.job.service;
 
+import co.elastic.clients.elasticsearch.ElasticsearchClient;
 import co.elastic.clients.elasticsearch._types.query_dsl.BoolQuery;
 import co.elastic.clients.elasticsearch._types.query_dsl.Query;
+import co.elastic.clients.elasticsearch.core.SearchResponse;
 import co.elastic.clients.json.JsonData;
 import com.example.airecruit.job.document.JobPostingDocument;
 import com.example.airecruit.job.dto.JobPostingDto;
@@ -23,6 +25,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
@@ -30,6 +33,7 @@ import java.util.List;
 public class JobSearchService {
 
     private final ElasticsearchOperations elasticsearchOperations;
+    private final ElasticsearchClient elasticsearchClient;
 
     public Page<JobPostingDto.SearchResponse> search(JobSearchDto dto) {
         BoolQuery.Builder boolQuery = new BoolQuery.Builder();
@@ -100,7 +104,38 @@ public class JobSearchService {
         return new PageImpl<>(content, pageable, hits.getTotalHits());
     }
 
+    /**
+     * 이력서 임베딩 벡터를 기반으로 kNN 유사 공고 검색.
+     * OPENAI_API_KEY 미설정 시 queryVector가 null이면 빈 리스트 반환.
+     */
+    public List<JobPostingDto.SearchResponse> knnSearch(List<Float> queryVector, int k) {
+        if (queryVector == null || queryVector.isEmpty()) return Collections.emptyList();
+
+        try {
+            SearchResponse<JobPostingDocument> response = elasticsearchClient.search(
+                    s -> s.index("job_postings")
+                            .knn(knn -> knn
+                                    .field("descriptionVector")
+                                    .queryVector(queryVector)
+                                    .numCandidates(50L)
+                                    .k((long) k)
+                                    .filter(f -> f.term(t -> t.field("status").value("OPEN")))
+                            ),
+                    JobPostingDocument.class
+            );
+
+            return response.hits().hits().stream()
+                    .map(hit -> toSearchResponse(hit.source()))
+                    .filter(r -> r != null)
+                    .toList();
+        } catch (Exception e) {
+            log.error("[JobSearchService] kNN 검색 실패: {}", e.getMessage(), e);
+            return Collections.emptyList();
+        }
+    }
+
     private JobPostingDto.SearchResponse toSearchResponse(JobPostingDocument doc) {
+        if (doc == null) return null;
         LocalDate deadline = doc.getDeadline() != null ? LocalDate.parse(doc.getDeadline()) : null;
 
         return JobPostingDto.SearchResponse.builder()
@@ -108,6 +143,7 @@ public class JobSearchService {
                 .companyId(doc.getCompanyId())
                 .companyName(doc.getCompanyName())
                 .title(doc.getTitle())
+                .description(doc.getDescription())
                 .jobCategory(doc.getJobCategory() != null
                         ? com.example.airecruit.job.domain.enums.JobCategory.valueOf(doc.getJobCategory()) : null)
                 .location(doc.getLocation())

@@ -1,0 +1,14 @@
+/qa-results/
+/uploads/
+/logs/
+/.idea/
+/api-gateway/target/
+/application-service/target/
+/auth-service/target/
+/common/target/
+/job-service/target/
+/notification-service/target/
+/user-service/target/
+/application-service/uploads/
+/.claude/
+/.mvn/

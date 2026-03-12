@@ -167,6 +167,7 @@ public class JobPostingDto {
         private Long companyId;
         private String companyName;
         private String title;
+        private String description;
         private JobCategory jobCategory;
         private String location;
         private EmploymentType employmentType;

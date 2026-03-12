@@ -1,0 +1,21 @@
+{
+  "properties": {
+    "jobPostingId":      { "type": "long" },
+    "companyId":         { "type": "long" },
+    "companyName":       { "type": "keyword" },
+    "title":             { "type": "text", "analyzer": "standard" },
+    "description":       { "type": "text", "analyzer": "standard" },
+    "jobCategory":       { "type": "keyword" },
+    "location":          { "type": "keyword" },
+    "employmentType":    { "type": "keyword" },
+    "experienceLevel":   { "type": "keyword" },
+    "minSalary":         { "type": "integer" },
+    "maxSalary":         { "type": "integer" },
+    "skills":            { "type": "keyword" },
+    "status":            { "type": "keyword" },
+    "source":            { "type": "keyword" },
+    "deadline":          { "type": "keyword" },
+    "createdAt":         { "type": "date", "format": "date_hour_minute_second" },
+    "descriptionVector": { "type": "dense_vector", "dims": 1536, "index": true, "similarity": "cosine" }
+  }
+}

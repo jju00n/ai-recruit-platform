@@ -7,6 +7,7 @@ import com.example.airecruit.job.domain.enums.*;
 import com.example.airecruit.job.repository.CompanyRepository;
 import com.example.airecruit.job.repository.JobPostingRepository;
 import com.example.airecruit.job.repository.JobPostingSearchRepository;
+import com.example.airecruit.job.service.EmbeddingService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -32,6 +33,7 @@ public class JobPostingSaver {
     private final CompanyRepository companyRepository;
     private final JobPostingRepository jobPostingRepository;
     private final JobPostingSearchRepository jobPostingSearchRepository;
+    private final EmbeddingService embeddingService;
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void saveOne(CrawledJobData data) {
@@ -84,6 +86,13 @@ public class JobPostingSaver {
                 ? Arrays.stream(jp.getSkills().split(",")).map(String::trim).toList()
                 : Collections.emptyList();
 
+        String embeddingText = String.join(" ",
+                jp.getTitle() != null ? jp.getTitle() : "",
+                jp.getDescription() != null ? jp.getDescription() : "",
+                jp.getRequirements() != null ? jp.getRequirements() : "",
+                jp.getSkills() != null ? jp.getSkills() : "");
+        float[] vector = embeddingService.embed(embeddingText);
+
         JobPostingDocument doc = JobPostingDocument.builder()
                 .id(jp.getId().toString())
                 .jobPostingId(jp.getId())
@@ -102,6 +111,7 @@ public class JobPostingSaver {
                 .source(jp.getSource().name())
                 .deadline(jp.getDeadline() != null ? jp.getDeadline().toString() : null)
                 .createdAt(jp.getCreatedAt() != null ? jp.getCreatedAt() : LocalDateTime.now())
+                .descriptionVector(vector)
                 .build();
 
         jobPostingSearchRepository.save(doc);
@@ -109,33 +119,55 @@ public class JobPostingSaver {
 
     // ── enum 매핑 ──────────────────────────────────────────────────────────
 
-    private static final java.util.Map<String, JobCategory> JOB_CATEGORY_MAP = java.util.Map.ofEntries(
-            java.util.Map.entry("백엔드", JobCategory.BACKEND),
-            java.util.Map.entry("서버", JobCategory.BACKEND),
-            java.util.Map.entry("프론트엔드", JobCategory.FRONTEND),
-            java.util.Map.entry("프론트", JobCategory.FRONTEND),
-            java.util.Map.entry("풀스택", JobCategory.FULLSTACK),
-            java.util.Map.entry("devops", JobCategory.DEVOPS),
-            java.util.Map.entry("데브옵스", JobCategory.DEVOPS),
-            java.util.Map.entry("인프라", JobCategory.DEVOPS),
-            java.util.Map.entry("데이터 엔지니어", JobCategory.DATA_ENGINEER),
-            java.util.Map.entry("데이터", JobCategory.DATA_ENGINEER),
-            java.util.Map.entry("머신러닝", JobCategory.ML_ENGINEER),
-            java.util.Map.entry("ai", JobCategory.ML_ENGINEER),
+    // 순서가 중요: 더 구체적인 키워드를 앞에 배치
+    private static final List<java.util.Map.Entry<String, JobCategory>> JOB_CATEGORY_RULES = List.of(
+            java.util.Map.entry("react native", JobCategory.MOBILE_IOS),
+            java.util.Map.entry("flutter", JobCategory.MOBILE_IOS),
             java.util.Map.entry("ios", JobCategory.MOBILE_IOS),
             java.util.Map.entry("android", JobCategory.MOBILE_ANDROID),
             java.util.Map.entry("안드로이드", JobCategory.MOBILE_ANDROID),
+            java.util.Map.entry("모바일", JobCategory.MOBILE_IOS),
+            java.util.Map.entry("데이터 엔지니어", JobCategory.DATA_ENGINEER),
+            java.util.Map.entry("머신러닝", JobCategory.ML_ENGINEER),
+            java.util.Map.entry("딥러닝", JobCategory.ML_ENGINEER),
+            java.util.Map.entry("ai 엔지니어", JobCategory.ML_ENGINEER),
+            java.util.Map.entry("ml ", JobCategory.ML_ENGINEER),
+            java.util.Map.entry("데이터", JobCategory.DATA_ENGINEER),
+            java.util.Map.entry("풀스택", JobCategory.FULLSTACK),
+            java.util.Map.entry("fullstack", JobCategory.FULLSTACK),
+            java.util.Map.entry("full stack", JobCategory.FULLSTACK),
+            java.util.Map.entry("프론트엔드", JobCategory.FRONTEND),
+            java.util.Map.entry("프론트 엔드", JobCategory.FRONTEND),
+            java.util.Map.entry("frontend", JobCategory.FRONTEND),
+            java.util.Map.entry("devops", JobCategory.DEVOPS),
+            java.util.Map.entry("데브옵스", JobCategory.DEVOPS),
+            java.util.Map.entry("인프라", JobCategory.DEVOPS),
+            java.util.Map.entry("sre", JobCategory.DEVOPS),
+            java.util.Map.entry("백엔드", JobCategory.BACKEND),
+            java.util.Map.entry("백 엔드", JobCategory.BACKEND),
+            java.util.Map.entry("backend", JobCategory.BACKEND),
+            java.util.Map.entry("서버", JobCategory.BACKEND),
             java.util.Map.entry("디자인", JobCategory.DESIGN),
+            java.util.Map.entry("ux", JobCategory.DESIGN),
+            java.util.Map.entry("ui ", JobCategory.DESIGN),
             java.util.Map.entry("pm", JobCategory.PM),
             java.util.Map.entry("기획", JobCategory.PM),
+            java.util.Map.entry("프로덕트 매니저", JobCategory.PM),
+            java.util.Map.entry("product manager", JobCategory.PM),
+            java.util.Map.entry("project manager", JobCategory.PM),
             java.util.Map.entry("qa", JobCategory.QA),
-            java.util.Map.entry("개발", JobCategory.BACKEND)
+            java.util.Map.entry("테스트", JobCategory.QA),
+            java.util.Map.entry("automation engineer", JobCategory.DEVOPS),
+            java.util.Map.entry("자동화 엔지니어", JobCategory.DEVOPS),
+            java.util.Map.entry("software engineer", JobCategory.BACKEND),
+            java.util.Map.entry("개발자", JobCategory.BACKEND),
+            java.util.Map.entry("엔지니어", JobCategory.BACKEND)
     );
 
     JobCategory mapJobCategory(String raw) {
         if (raw == null) return JobCategory.ETC;
         String lower = raw.toLowerCase().trim();
-        return JOB_CATEGORY_MAP.entrySet().stream()
+        return JOB_CATEGORY_RULES.stream()
                 .filter(e -> lower.contains(e.getKey()))
                 .map(java.util.Map.Entry::getValue)
                 .findFirst()

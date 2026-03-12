@@ -1,5 +1,10 @@
 package com.example.airecruit.job.document;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
+import com.fasterxml.jackson.databind.annotation.JsonSerialize;
+import com.fasterxml.jackson.datatype.jsr310.deser.LocalDateTimeDeserializer;
+import com.fasterxml.jackson.datatype.jsr310.ser.LocalDateTimeSerializer;
 import lombok.*;
 import org.springframework.data.annotation.Id;
 import org.springframework.data.elasticsearch.annotations.*;
@@ -8,6 +13,8 @@ import java.time.LocalDateTime;
 import java.util.List;
 
 @Document(indexName = "job_postings")
+@Mapping(mappingPath = "es-mappings/job_postings.json")
+@JsonIgnoreProperties(ignoreUnknown = true)
 @Getter
 @Builder
 @NoArgsConstructor
@@ -57,5 +64,9 @@ public class JobPostingDocument {
     private String deadline;    // "yyyy-MM-dd"
 
     @Field(type = FieldType.Date, format = DateFormat.date_hour_minute_second)
+    @JsonSerialize(using = LocalDateTimeSerializer.class)
+    @JsonDeserialize(using = LocalDateTimeDeserializer.class)
     private LocalDateTime createdAt;
+
+    private float[] descriptionVector;
 }

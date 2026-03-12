@@ -4,6 +4,7 @@ import com.example.airecruit.application.client.JobServiceClient;
 import com.example.airecruit.application.domain.AiFeedback;
 import com.example.airecruit.application.dto.AiCoachingDto;
 import com.example.airecruit.application.dto.AiJobRecommendationDto;
+import com.example.airecruit.application.dto.AiJobReviewDto;
 import com.example.airecruit.application.dto.ResumeDto;
 import com.example.airecruit.application.kafka.ApplicationSubmittedEvent;
 import com.example.airecruit.application.kafka.ApplicationEventProducer;
@@ -36,10 +37,13 @@ public class AiAnalysisService {
     private final ObjectMapper objectMapper;
     private final RestClient claudeRestClient;
     private final StringRedisTemplate redisTemplate;
+    private final JobServiceClient jobServiceClient;
+    private final EmbeddingService embeddingService;
 
     private static final Duration CACHE_TTL = Duration.ofHours(1);
     private static final String CACHE_COACHING = "ai:coaching:";
     private static final String CACHE_RECOMMEND = "ai:recommend:";
+    private static final String CACHE_REVIEW = "ai:review:";
 
     @Value("${claude.api.model}")
     private String claudeModel;
@@ -72,6 +76,11 @@ public class AiAnalysisService {
             다른 텍스트, 설명, 마크다운 코드 펜스 없이 순수 JSON만 출력하세요.
             """;
 
+    private static final String REVIEW_SYSTEM = """
+            당신은 채용 전문가입니다. 채용공고와 이력서를 분석하여 반드시 JSON만 응답하세요.
+            다른 텍스트, 설명, 마크다운 코드 펜스 없이 순수 JSON만 출력하세요.
+            """;
+
     // ── Kafka 이벤트 기반 AI 분석 ─────────────────────────────────────────────
     public void analyze(ApplicationSubmittedEvent event) {
         log.info("[AI] 분석 시작 - applicationId={}", event.getApplicationId());
@@ -90,7 +99,7 @@ public class AiAnalysisService {
                 """, event.getJobTitle(), abbreviate(event.getJobDescription(), 1500), abbreviate(event.getResumeContent(), 2000));
 
         try {
-            String responseText = callClaudeApiWithSystem(claudeModel, ANALYSIS_SYSTEM, userContent);
+            String responseText = callClaudeApiWithSystem(claudeModel, ANALYSIS_SYSTEM, userContent, 2048);
             AiFeedback feedback = parseAndSave(event.getApplicationId(), responseText);
 
             ResumeAnalyzedEvent analyzedEvent = ResumeAnalyzedEvent.builder()
@@ -130,16 +139,13 @@ public class AiAnalysisService {
         }
 
         String userContent = String.format("""
-                [이력서]
-                %s
-
-                아래 JSON 형식으로만 응답하세요:
-                {"overallScore":72,"summary":"요약 (100자 이내)","structuralFeedback":"구조 피드백 (100자 이내)","contentFeedback":"내용 피드백 (100자 이내)","improvements":[{"section":"섹션명","issue":"문제점","suggestion":"개선 제안","example":"예시"}]}
-                improvements는 정확히 3개, 각 필드 80자 이내.
-                """, abbreviate(resume.getContent(), 3000));
+                [이력서]%s
+                JSON만 출력:{"overallScore":72,"summary":"요약(30자내)","structuralFeedback":"구조피드백(30자내)","contentFeedback":"내용피드백(30자내)","improvements":[{"section":"섹션","issue":"문제(20자내)","suggestion":"개선(20자내)","example":"예시(20자내)"}]}
+                improvements는 정확히 2개, 각 필드 20자 이내.
+                """, abbreviate(resume.getContent(), 1500));
 
         try {
-            String responseText = callClaudeApiWithSystem(claudeFastModel, COACHING_SYSTEM, userContent);
+            String responseText = callClaudeApiWithSystem(claudeFastModel, COACHING_SYSTEM, userContent, 640);
             String json = stripCodeFence(responseText);
             JsonNode node = objectMapper.readTree(json);
 
@@ -181,6 +187,77 @@ public class AiAnalysisService {
         }
     }
 
+    // ── AI 공고 리뷰 ──────────────────────────────────────────────────────────
+    public AiJobReviewDto.Response reviewJobFit(JobServiceClient.JobDetail job, ResumeDto.Response resume) {
+        log.info("[AI 리뷰] 시작 - jobId={}, resumeId={}", job.id(), resume.getId());
+
+        String cacheKey = CACHE_REVIEW + job.id() + ":" + resume.getId();
+        String cached = redisTemplate.opsForValue().get(cacheKey);
+        if (cached != null) {
+            try {
+                log.info("[AI 리뷰] 캐시 히트 - jobId={}, resumeId={}", job.id(), resume.getId());
+                return objectMapper.readValue(cached, AiJobReviewDto.Response.class);
+            } catch (Exception e) {
+                log.warn("[AI 리뷰] 캐시 역직렬화 실패, Claude 호출로 대체");
+            }
+        }
+
+        String jdText = String.join("\n",
+                "제목: " + job.title(),
+                "자격요건: " + abbreviate(job.requirements(), 300),
+                "주요업무: " + abbreviate(job.responsibilities(), 200)
+        );
+
+        String userContent = String.format("""
+                [공고]%s
+                [이력서]%s
+                JSON만 출력:{"compatibilityScore":75,"summary":"요약(20자내)","strengths":["강점1","강점2"],"weaknesses":["약점1"],"tips":["팁1"]}
+                각 문자열 20자 이내.
+                """, jdText, abbreviate(resume.getContent(), 1000));
+
+        try {
+            String responseText = callClaudeApiWithSystem(claudeFastModel, REVIEW_SYSTEM, userContent, 400);
+            String json = stripCodeFence(responseText);
+            JsonNode node = objectMapper.readTree(json);
+
+            List<String> strengths = parseStringArray(node.path("strengths"));
+            List<String> weaknesses = parseStringArray(node.path("weaknesses"));
+            List<String> tips = parseStringArray(node.path("tips"));
+
+            AiJobReviewDto.Response result = new AiJobReviewDto.Response(
+                    node.path("compatibilityScore").asInt(50),
+                    node.path("summary").asText(""),
+                    strengths,
+                    weaknesses,
+                    tips
+            );
+
+            try {
+                redisTemplate.opsForValue().set(cacheKey, objectMapper.writeValueAsString(result), CACHE_TTL);
+            } catch (Exception e) {
+                log.warn("[AI 리뷰] 캐시 저장 실패 (무시): {}", e.getMessage());
+            }
+
+            log.info("[AI 리뷰] 완료 - jobId={}, resumeId={}, score={}", job.id(), resume.getId(), result.compatibilityScore());
+            return result;
+        } catch (BizException e) {
+            throw e;
+        } catch (Exception e) {
+            log.error("[AI 리뷰] 실패 - jobId={}, resumeId={}, error={}", job.id(), resume.getId(), e.getMessage(), e);
+            throw new BizException(Status.AI_JOB_REVIEW_ERROR);
+        }
+    }
+
+    private List<String> parseStringArray(JsonNode node) {
+        List<String> list = new ArrayList<>();
+        if (node.isArray()) {
+            for (JsonNode item : node) {
+                list.add(item.asText(""));
+            }
+        }
+        return list;
+    }
+
     // ── AI 공고 추천 ──────────────────────────────────────────────────────────
     public List<AiJobRecommendationDto.Response> recommendJobs(ResumeDto.Response resume, List<JobServiceClient.JobSummary> jobs) {
         log.info("[AI 추천] 시작 - resumeId={}, jobCount={}", resume.getId(), jobs.size());
@@ -197,30 +274,35 @@ public class AiAnalysisService {
             }
         }
 
-        // ① 이력서 키워드 추출 → 관련 공고 상위 8개로 사전 필터링
-        List<JobServiceClient.JobSummary> filteredJobs = preFilterJobs(resume.getContent(), jobs);
-        log.info("[AI 추천] 필터링 후 공고 수: {}", filteredJobs.size());
+        // ① 이력서 임베딩 → kNN 검색 (OPENAI_API_KEY 설정 시), 미설정 시 키워드 필터링 fallback
+        float[] vector = embeddingService.embed(abbreviate(resume.getContent(), 8000));
+        List<JobServiceClient.JobSummary> filteredJobs;
+        if (vector != null) {
+            filteredJobs = jobServiceClient.knnSearch(vector);
+            if (filteredJobs.isEmpty()) {
+                filteredJobs = preFilterJobs(resume.getContent(), jobs);
+            }
+            log.info("[AI 추천] kNN 검색 결과: {}건", filteredJobs.size());
+        } else {
+            filteredJobs = preFilterJobs(resume.getContent(), jobs);
+            log.info("[AI 추천] 키워드 필터링 결과: {}건", filteredJobs.size());
+        }
 
         // ② 공고 목록 (캐싱 대상 블록 — 고정 데이터)
+        // kNN이 이미 의미 기반으로 정렬했으므로 desc 불필요
         String jobListText = filteredJobs.stream()
-                .map(j -> String.format("{\"id\":%d,\"title\":\"%s\",\"company\":\"%s\",\"desc\":\"%s\"}",
-                        j.id(), j.title(), j.companyName(), abbreviate(j.description(), 150)))
-                .collect(Collectors.joining(",\n", "[채용공고 목록]\n[", "]"));
+                .map(j -> String.format("%d|%s|%s", j.id(), j.title(), j.companyName()))
+                .collect(Collectors.joining("\n", "[공고]\n", ""));
 
         // ③ 이력서 (가변 데이터 — 캐싱 미적용)
-        String resumeText = "[이력서]\n" + abbreviate(resume.getContent(), 1500);
+        String resumeText = "[이력서]\n" + abbreviate(resume.getContent(), 300);
 
-        String instruction = """
-
-                위 이력서와 채용공고를 비교해 가장 적합한 공고 상위 5개를 선별하세요.
-                JSON 배열로만 응답하세요:
-                [{"jobPostingId":1,"jobTitle":"백엔드 개발자","companyName":"회사명","matchScore":85,"matchReason":"Spring Boot 경험이 JD와 일치"}]
-                matchScore는 0~100 사이의 정수입니다.
-                """;
+        String instruction = "\n위 이력서에 맞는 공고 상위5개를 JSON 배열로만 응답:" +
+                "[{\"jobPostingId\":1,\"jobTitle\":\"직함\",\"companyName\":\"회사\",\"matchScore\":85,\"matchReason\":\"이유(15자내)\"}]";
 
         try {
             // ④ 공고 목록(캐싱) + 이력서(가변)를 content 블록으로 분리
-            String responseText = callClaudeApiWithCache(claudeFastModel, MATCHING_SYSTEM, jobListText, resumeText + instruction);
+            String responseText = callClaudeApiWithCache(claudeFastModel, MATCHING_SYSTEM, jobListText, resumeText + instruction, 1024);
             String json = stripCodeFence(responseText);
             JsonNode arrayNode = objectMapper.readTree(json);
 

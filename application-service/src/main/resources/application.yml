@@ -44,3 +44,7 @@ claude:
 
 job-service:
   url: http://localhost:8083
+
+openai:
+  api:
+    key: ${OPENAI_API_KEY:}

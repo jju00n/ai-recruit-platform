@@ -22,7 +22,8 @@ public enum Status {
     INVALID_FILE_TYPE(123, "PDF 파일만 업로드 가능합니다."),
     JOB_SERVICE_ERROR(124, "채용공고 정보를 가져올 수 없습니다."),
     AI_ANALYSIS_ERROR(125, "AI 분석 중 오류가 발생했습니다."),
-    RESUME_COACHING_ERROR(126, "AI 이력서 코칭 분석에 실패했습니다.");
+    RESUME_COACHING_ERROR(126, "AI 이력서 코칭 분석에 실패했습니다."),
+    AI_JOB_REVIEW_ERROR(127, "AI 공고 리뷰 분석에 실패했습니다.");
 
     private final int code;
     private String message;

@@ -92,6 +92,13 @@ public class UserService {
         return UserDto.of(user);
     }
 
+    @Transactional(readOnly = true)
+    public String getUserEmail(Long idx) {
+        User user = userRepository.findById(idx)
+                .orElseThrow(() -> new IllegalArgumentException("해당 유저를 찾을 수 없습니다. ID: " + idx));
+        return user.getUserId();
+    }
+
     @Transactional
     public LoginDto.Response loginWithApple(LoginDto.AppleLoginRequestDto dto) {
         Claims claims = appleJwtUtils.getClaims(dto.getIdentityToken());

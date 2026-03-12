@@ -55,4 +55,11 @@ public class UserController {
         LoginDto.Response response = userService.loginWithApple(dto);
         return ResponseEntity.ok(ResultData.of(Status.SUCCESS, response));
     }
+
+    // 내부 서비스 간 통신용 (notification-service → user-service 직접 호출)
+    @GetMapping("/internal/{idx}")
+    public ResponseEntity<ResultData<String>> getInternalUserEmail(@PathVariable Long idx) {
+        String email = userService.getUserEmail(idx);
+        return ResponseEntity.ok(ResultData.of(Status.SUCCESS, "이메일 조회 성공", email));
+    }
 }

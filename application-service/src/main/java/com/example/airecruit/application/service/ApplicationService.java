@@ -1,10 +1,13 @@
 package com.example.airecruit.application.service;
 
+import com.example.airecruit.application.client.JobServiceClient;
 import com.example.airecruit.application.domain.AiFeedback;
 import com.example.airecruit.application.domain.Application;
 import com.example.airecruit.application.domain.Resume;
 import com.example.airecruit.application.domain.enums.ApplicationStatus;
+import com.example.airecruit.application.dto.AiJobReviewDto;
 import com.example.airecruit.application.dto.ApplicationDto;
+import com.example.airecruit.application.dto.ResumeDto;
 import com.example.airecruit.application.kafka.ApplicationEventProducer;
 import com.example.airecruit.application.kafka.ApplicationSubmittedEvent;
 import com.example.airecruit.application.repository.AiFeedbackRepository;
@@ -14,13 +17,13 @@ import com.example.airecruit.common.dto.Status;
 import com.example.airecruit.common.exception.BizException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.client.RestClient;
 
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
@@ -34,6 +37,8 @@ public class ApplicationService {
     private final AiFeedbackRepository aiFeedbackRepository;
     private final ApplicationEventProducer eventProducer;
     private final RestClient jobServiceRestClient;
+    private final JobServiceClient jobServiceClient;
+    private final AiAnalysisService aiAnalysisService;
 
     @Transactional
     public ApplicationDto.Response submit(Long userId, ApplicationDto.SubmitReq req) {
@@ -91,6 +96,20 @@ public class ApplicationService {
                 .orElseThrow(() -> new BizException(Status.APPLICATION_NOT_FOUND));
         AiFeedback feedback = aiFeedbackRepository.findByApplicationId(id).orElse(null);
         return ApplicationDto.DetailResponse.from(application, feedback);
+    }
+
+    public AiJobReviewDto.Response getJobAiReview(Long userId, Long jobId) {
+        // 사용자의 최신 이력서 조회
+        List<Resume> resumes = resumeRepository.findAllByUserIdOrderByCreatedAtDesc(userId);
+        if (resumes.isEmpty()) {
+            throw new BizException(Status.RESUME_NOT_FOUND, "이력서를 먼저 등록해주세요.");
+        }
+        ResumeDto.Response resume = ResumeDto.Response.from(resumes.get(0));
+
+        // 공고 상세 조회
+        JobServiceClient.JobDetail job = jobServiceClient.getJobById(jobId);
+
+        return aiAnalysisService.reviewJobFit(job, resume);
     }
 
     @Transactional
