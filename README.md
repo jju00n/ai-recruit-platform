@@ -1,5 +1,34 @@
 # AI Recruit Platform
 
+> **LLM + RAG 기반 AI 채용 매칭 플랫폼** — Spring Boot MSA 아키텍처
+
+---
+
+## 왜 만들었나
+
+기존에는 모놀리식 아키텍처로만 개발해왔습니다. 하나의 큰 프로젝트에 모든 기능을 넣다 보니, 작은 이슈 하나가 전체 서비스를 멈추는 상황을 반복해서 경험했습니다. MSA는 각 기능이 독립적으로 배포·운영되어 하나의 서비스에 장애가 발생해도 다른 핵심 기능은 계속 동작한다는 점에 관심이 생겼고, 직접 경험해보고 싶었습니다.
+
+MSA와 함께 실무에서 많이 쓰이는 **Kafka, Redis 캐싱, Elasticsearch, RAG** 기술 스택도 사이드 프로젝트를 통해 경험하고 싶었습니다. "이 기술들을 모두 써볼 수 있는 적합한 주제가 뭘까?"를 고민하다, 원티드·사람인 같은 채용 플랫폼을 벤치마킹한 **AI 채용 플랫폼**으로 방향을 잡았습니다.
+
+- **MSA + Kafka**: 서비스 독립성 확보, AI 분석을 비동기 파이프라인으로 처리
+- **Elasticsearch + RAG**: 키워드 검색을 넘어 이력서 임베딩 기반 의미 유사 공고 추천
+- **Redis 캐싱**: AI 응답을 캐싱해 반복 요청 시 14초 → 0.01초 실현
+- **Claude API**: 이력서-JD 적합도 분석, 코칭 피드백, 합격 전략 제안
+
+---
+
+## 화면
+
+> 스크린샷 추가 예정 (채용공고 목록, AI 리뷰 카드, AI 코칭 결과)
+
+<!-- 아래에 스크린샷 추가
+![채용공고 목록](docs/screenshots/jobs-list.png)
+![AI 리뷰](docs/screenshots/ai-review.png)
+![AI 코칭](docs/screenshots/ai-coaching.png)
+-->
+
+---
+
 구직자와 채용공고를 AI로 매칭하는 **Spring Boot MSA 아키텍처** 기반 채용 플랫폼입니다.
 Claude AI를 활용해 이력서를 분석하고, 맞춤 채용공고 추천 및 코칭 피드백을 제공합니다.
 
@@ -268,6 +297,60 @@ JAVA_HOME=$(/usr/libexec/java_home -v 17) ./mvnw spring-boot:run -pl job-service
 | AI 추천 | 14.3초 | 6.2초 | 4.35초 | **3.7초** | **74%↓** |
 | AI 리뷰 | — | 6.1초 (첫 구현) | **3.32초** | — | **46%↓** |
 | 캐시 히트 | — | 0.01초 | 0.01초 | 0.01초 | — |
+
+---
+
+## 트러블슈팅
+
+실제 개발 과정에서 겪은 주요 문제와 해결 과정입니다.
+
+### 1. Redis write silent failure — 로그아웃 후 토큰이 무효화되지 않음
+
+**문제:** 로그아웃 API는 200을 반환하지만, 로그아웃한 토큰으로 계속 API 호출이 가능했습니다.
+
+**원인:** `RedisConfig`에서 `new LettuceConnectionFactory("localhost", 6379)`로 수동 생성하면 Spring Boot 자동 구성이 적용되지 않아, application.yml의 Redis 설정이 무시된 채 기본값으로 다른 인스턴스에 연결됩니다. 블랙리스트 저장 자체는 성공(`void` 반환)이지만 실제 Redis에는 반영되지 않았습니다.
+
+**해결:** `LettuceConnectionFactory`를 직접 생성하는 대신, Spring Boot가 주입하는 `RedisConnectionFactory` 빈을 그대로 사용하도록 변경했습니다.
+
+---
+
+### 2. Elasticsearch 검색 결과 0건 — 필드 타입 불일치
+
+**문제:** 채용공고 검색 API가 항상 0건을 반환했습니다.
+
+**원인:** ES 인덱스의 `title`, `company` 필드가 `text` 타입으로 색인되어 있었으나, 검색 쿼리는 `keyword` 타입에 맞는 exact match로 동작하고 있었습니다. ES는 타입 불일치 시 에러 없이 빈 결과를 반환합니다.
+
+**해결:** `es-mappings/job_postings.json` 매핑 파일에서 검색 대상 필드를 `text` (+ `keyword` sub-field)로 재정의하고, `POST /api/v1/jobs/reindex` 엔드포인트로 100건 전체 재색인했습니다.
+
+---
+
+### 3. PDF 파일 저장 500 에러
+
+**문제:** 이력서 PDF 업로드 시 서버에서 500 에러가 발생했습니다.
+
+**원인:** `file.transferTo(File)` 메서드는 서블릿 컨테이너 임시 디렉토리의 파일을 대상으로 동작하는데, Spring Boot 내장 Tomcat 환경에서 `MultipartFile`이 이미 클리어된 이후 호출되면 `IllegalStateException`이 발생합니다.
+
+**해결:** `Files.write(filePath, file.getBytes())`로 교체해 바이트 배열을 직접 쓰도록 변경했습니다. `getBytes()`는 임시 파일 의존 없이 메모리에서 바로 읽습니다.
+
+---
+
+### 4. Kafka 역직렬화 실패 — notification-service 무한 재시도
+
+**문제:** notification-service가 Kafka 메시지를 소비하지 못하고 `ClassCastException` 또는 `SerializationException`으로 무한 재시도했습니다.
+
+**원인:** Producer(application-service)는 `JsonSerializer`로 직렬화하지만, Consumer(notification-service)는 `JsonDeserializer`를 설정하면서 타입 정보 헤더를 신뢰하도록(`spring.json.trusted.packages`) 설정하지 않아 역직렬화에 실패했습니다.
+
+**해결:** `StringDeserializer + StringJsonMessageConverter` 조합으로 전환했습니다. 메시지를 먼저 `String`으로 수신한 뒤 `ObjectMapper`로 수동 역직렬화하면 타입 헤더 의존성이 사라집니다. 또한 이메일 발송 오류를 `try-catch`로 흡수해 Consumer 리트라이 무한 루프를 방지했습니다.
+
+---
+
+### 5. Claude API 응답 JsonEOFException — max_tokens 부족
+
+**문제:** AI 코칭/추천 응답이 간헐적으로 `JsonProcessingException: Unexpected end-of-input`으로 실패했습니다.
+
+**원인:** `max_tokens: 512`로 설정했을 때 한국어 JSON 응답이 중간에 잘려서 파싱이 실패했습니다. 한국어는 영어 대비 토큰 효율이 낮아 예상보다 더 많은 토큰을 소비합니다.
+
+**해결:** `max_tokens`를 1024로 올리고, 프롬프트에서 출력 항목 수와 각 필드 길이를 명시적으로 제한해 실제 응답 길이를 줄이는 방향으로 최적화했습니다. (예: `"improvements": 2개, 각 20자 이내`)
 
 ---
 
